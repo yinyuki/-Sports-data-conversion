@@ -1,0 +1,41 @@
+# Local Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build output (publish binaries separately if needed)
+build/
+dist/
+*.spec
+*.exe
+*.dll
+*.zip
+
+# Health archives, generated workouts, local settings and reports
+HUAWEI_HEALTH/
+exported_fit/
+verification/
+private_data/
+*.json
+*.fit
+*.fit.gz
+*.gpx
+*.tcx
+*.xls
+*.xlsx
+*.csv
+*.log
+*.tmp
+
+# Editor and machine configuration
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.env
+.env.*
