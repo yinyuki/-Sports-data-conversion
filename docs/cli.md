@@ -49,6 +49,7 @@
 - `日期_时间_运动类型_摘要.fit`：每次运动一个 FIT。
 - `export_manifest.json`：成功导出文件的指纹、哈希和限制说明，用于识别重复导出。
 - `conversion_report_*.json`：本次任务的成功、跳过、失败、取消状态及各条记录的说明。
+- `Zepp_FIT_*.zip`：GUI“导出 ZIP 包”生成的压缩包，必要时带 `_part01` 等分包编号；仅含本次筛选成功或已存在的 FIT。
 - `converter_settings.json`：GUI 在应用目录保存的源路径、输出路径和坐标选项。
 
 报告可能包含源文件路径、运动日期和记录 ID。默认不纳入 Git。

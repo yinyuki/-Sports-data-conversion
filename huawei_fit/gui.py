@@ -165,7 +165,8 @@ class ConverterApp(tk.Tk):
         buttons.grid(row=6, column=0, sticky="ew", pady=(12, 10))
         for label, command, style in (("导出测试样本", lambda: self.export("samples"), "TButton"),
                                        ("导出所选", lambda: self.export("selected"), "TButton"),
-                                       ("导出全部筛选结果", lambda: self.export("visible"), "Accent.TButton")):
+                                       ("导出全部筛选结果", lambda: self.export("visible"), "Accent.TButton"),
+                                       ("导出 ZIP 包", lambda: self.export("zip"), "TButton")):
             button = ttk.Button(buttons, text=label, command=command, style=style)
             button.pack(side="left", padx=(0, 10))
             self.controls.append(button)
@@ -311,9 +312,13 @@ class ConverterApp(tk.Tk):
         self.last_output = output
         self.status.set(f"准备导出 {len(chosen)} 次运动…")
         self.append_log(f"导出 {len(chosen)} 条 → {output}；坐标：{COORD_MODES[mode]}")
+        if kind == "zip":
+            self.append_log("将当前筛选结果打包为 ZIP，仅包含 FIT；超过 50 MB 自动分为多个可独立导入的包。")
         def work():
             report = export_exercises(chosen, output, mode, self.cancel,
-                                      lambda n, total, result: self.events.put(("export_progress", (n, total, result))))
+                                      lambda n, total, result: self.events.put(("export_progress", (n, total, result))),
+                                      pack_zip=kind == "zip",
+                                      zip_progress=lambda n, total, text: self.events.put(("progress", (n, total, text))))
             self.events.put(("exported", report))
         self.run_worker(work)
 
@@ -369,6 +374,14 @@ class ConverterApp(tk.Tk):
             elif kind == "exported":
                 self.status.set(f"{'已取消' if value['cancelled'] else '导出完成'}：成功 {value['success']}，"
                                 f"跳过 {value['skipped']}，失败 {value['failed']}")
+                if value.get("zip_files"):
+                    count = sum(item["count"] for item in value["zip_files"])
+                    self.status.set(f"ZIP 已生成：{len(value['zip_files'])} 个包，包含 {count} 条运动；转换失败 {value['failed']} 条")
+                    for archive in value["zip_files"]:
+                        self.append_log(f"ZIP：{archive['file']}（{archive['count']} 个 FIT，{archive['bytes']/1_000_000:.2f} MB）")
+                if value.get("zip_error"):
+                    self.status.set("FIT 导出已结束，ZIP 打包失败；请查看下方原因")
+                    self.append_log(f"ZIP 打包失败：{value['zip_error']}")
                 self.append_log(f"报告：{value['report_path']}")
                 self.append_log("请在 Zepp 中核对运动日期、距离、时长、心率和地图；每条记录的限制说明见报告 notes。")
             elif kind == "error":

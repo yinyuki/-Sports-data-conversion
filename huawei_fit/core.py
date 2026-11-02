@@ -12,8 +12,12 @@ import math
 import os
 import tempfile
 import uuid
+import zipfile
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+# Packaging/UI updates do not change FIT contents or invalidate prior exports.
+FIT_FORMAT_VERSION = "1.0.0"
+ZIP_MAX_BYTES = 50_000_000
 FIT_EPOCH = 631065600
 SPORTS = {
     257: ("户外步行", "walking", "generic", "walk"),
@@ -387,8 +391,87 @@ def write_json(path, data):
     atomic_bytes(Path(path), json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
+def package_fit_files(files: list[Path], output: Path, cancel: Event | None = None,
+                      progress: Callable | None = None, max_bytes=ZIP_MAX_BYTES):
+    """Create flat, FIT-only ZIPs within both compressed and raw size limits."""
+    files = list(dict.fromkeys(Path(file).resolve() for file in files))
+    if not files:
+        raise ValueError("没有成功导出的 FIT，无法创建 ZIP 包")
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    groups, group, estimate = [], [], 22
+    names = set()
+    for path in files:
+        if cancel and cancel.is_set():
+            raise InterruptedError("已取消 ZIP 打包")
+        if path.suffix.lower() != ".fit" or not path.is_file():
+            raise ValueError(f"不是可用的 FIT 文件：{path.name}")
+        if path.name.casefold() in names:
+            raise ValueError(f"ZIP 内存在同名 FIT：{path.name}")
+        names.add(path.name.casefold())
+        size = path.stat().st_size
+        # Conservative bound for DEFLATE expansion plus both ZIP headers.
+        bound = size + ((size + 999) // 1000) * 8 + 256 + 2 * len(path.name.encode("utf-8"))
+        if bound + 22 > max_bytes:
+            raise ValueError(f"单个 FIT 超过 ZIP 分包大小限制：{path.name}")
+        if group and estimate + bound > max_bytes:
+            groups.append(group)
+            group, estimate = [], 22
+        group.append(path)
+        estimate += bound
+    if group:
+        groups.append(group)
+    base = f"Zepp_FIT_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
+    pending, published, archives = [], [], []
+    completed = 0
+    try:
+        for part, paths in enumerate(groups, 1):
+            if cancel and cancel.is_set():
+                raise InterruptedError("已取消 ZIP 打包")
+            handle, temp_name = tempfile.mkstemp(dir=output, prefix=".huawei-fit-zip-", suffix=".tmp")
+            os.close(handle)
+            temp = Path(temp_name)
+            name = f"{base}.zip" if len(groups) == 1 else f"{base}_part{part:02}.zip"
+            destination = output / name
+            pending.append((temp, destination))
+            with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED,
+                                 compresslevel=6, allowZip64=False) as archive:
+                for path in paths:
+                    if cancel and cancel.is_set():
+                        raise InterruptedError("已取消 ZIP 打包")
+                    archive.write(path, arcname=path.name)
+                    completed += 1
+                    if progress:
+                        progress(completed, len(files), f"正在打包 ZIP {completed}/{len(files)}")
+            with zipfile.ZipFile(temp) as archive:
+                if archive.testzip() is not None:
+                    raise ValueError("ZIP 文件完整性校验失败")
+                raw_size = sum(item.file_size for item in archive.infolist())
+            if temp.stat().st_size > max_bytes or raw_size > max_bytes:
+                raise ValueError("ZIP 超出大小限制，未发布压缩包")
+            archives.append({"file": str(destination), "count": len(paths),
+                             "bytes": temp.stat().st_size, "uncompressed_bytes": raw_size})
+        if cancel and cancel.is_set():
+            raise InterruptedError("已取消 ZIP 打包")
+        for temp, destination in pending:
+            # UUID names and exclusive reservation prevent replacing an existing ZIP.
+            with destination.open("xb"):
+                pass
+            published.append(destination)
+            os.replace(temp, destination)
+        return archives
+    except BaseException:
+        for path in published:
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        for temp, _ in pending:
+            temp.unlink(missing_ok=True)
+
+
 def export_exercises(exercises: list[Exercise], output: Path, coord_mode="auto",
-                     cancel: Event | None = None, progress: Callable | None = None):
+                     cancel: Event | None = None, progress: Callable | None = None,
+                     pack_zip=False, zip_progress: Callable | None = None):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "export_manifest.json"
@@ -413,7 +496,7 @@ def export_exercises(exercises: list[Exercise], output: Path, coord_mode="auto",
             if (str(raw.get("recordId") or "") != exercise.record_id
                     or int(raw["startTime"]) != exercise.start_ms):
                 raise ValueError("扫描后源文件已改变，请重新扫描")
-            fingerprint = hashlib.sha256(json.dumps({"raw": raw, "mode": coord_mode, "version": VERSION},
+            fingerprint = hashlib.sha256(json.dumps({"raw": raw, "mode": coord_mode, "version": FIT_FORMAT_VERSION},
                                                     sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             known = manifest.get(fingerprint, {})
             known_name = known.get("file", "")
@@ -453,6 +536,16 @@ def export_exercises(exercises: list[Exercise], output: Path, coord_mode="auto",
               "success": sum(x["status"] == "success" for x in outcomes),
               "skipped": sum(x["status"] == "skipped" for x in outcomes),
               "failed": sum(x["status"] == "failed" for x in outcomes), "results": outcomes}
+    if pack_zip:
+        report["zip_files"] = []
+        if not report["cancelled"]:
+            try:
+                files = [Path(item["file"]) for item in outcomes if item["status"] in ("success", "skipped")]
+                report["zip_files"] = package_fit_files(files, output, cancel, zip_progress)
+            except InterruptedError:
+                report["cancelled"] = True
+            except Exception as exc:
+                report["zip_error"] = f"{type(exc).__name__}: {exc}"
     report_path = output / f"conversion_report_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:4]}.json"
     write_json(report_path, report)
     report["report_path"] = str(report_path)
