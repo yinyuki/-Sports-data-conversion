@@ -41,6 +41,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Python 3.10+ with Tkinter is required.' }
 $requirements = if ($BuildTools) { 'requirements-build.txt' } else { 'requirements.txt' }
 & $venvPython -m pip install -r (Join-Path $PSScriptRoot $requirements)
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
-& $venvPython -c 'from garmin_fit_sdk import Encoder, Decoder; print("FIT SDK is ready.")'
+& $venvPython -c 'import customtkinter; from garmin_fit_sdk import Encoder, Decoder'
 if ($LASTEXITCODE -ne 0) { throw 'FIT SDK encoding support could not be loaded.' }
 Write-Host 'Setup complete. Run Start GUI.cmd or .venv/Scripts/python.exe app.py'

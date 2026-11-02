@@ -1,1 +1,2 @@
 garmin-fit-sdk==21.218.0
+customtkinter==5.2.2
