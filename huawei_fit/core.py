@@ -14,11 +14,13 @@ import tempfile
 import uuid
 import zipfile
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 # Packaging/UI updates do not change FIT contents or invalidate prior exports.
-FIT_FORMAT_VERSION = "1.0.0"
+FIT_FORMAT_VERSION = "1.0.1"
 ZIP_MAX_BYTES = 50_000_000
 FIT_EPOCH = 631065600
+# This position recurs at the ends and gaps of Huawei tracks.
+HUAWEI_GPS_PLACEHOLDER = (90.0, -80.0)
 SPORTS = {
     257: ("户外步行", "walking", "generic", "walk"),
     258: ("户外跑步", "running", "generic", "run"),
@@ -70,6 +72,15 @@ def detail_lines(text):
         fields = dict(part.split("=", 1) for part in line.strip().split(";") if "=" in part)
         if "tp" in fields:
             yield fields
+
+
+def _gps_position(item):
+    lat, lon = number(item.get("lat")), number(item.get("lon"))
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    if (lat, lon) in ((0, 0), HUAWEI_GPS_PLACEHOLDER):
+        return None
+    return lat, lon
 
 
 @dataclass
@@ -150,8 +161,7 @@ def scan_archive(source: Path, cancel: Event | None = None,
                 ng, nh = 0, 0
                 for item in detail_lines(raw.get("detailData")):
                     if item["tp"] == "lbs":
-                        lat, lon = number(item.get("lat")), number(item.get("lon"))
-                        if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180 and (lat or lon):
+                        if _gps_position(item) is not None:
                             ng += 1
                     elif item["tp"] in ("h-r", "i-h-r") and 0 < number(item.get("v"), 0) < 255:
                         nh += 1
@@ -266,14 +276,12 @@ def build_messages(raw: dict, coord_mode="auto"):
         tag = item["tp"]
         value = number(item.get("v"))
         if tag == "lbs" and allow_gps:
-            lat, lon = number(item.get("lat")), number(item.get("lon"))
+            position = _gps_position(item)
             sec = _sample_second(item.get("t"), start)
-            if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180) or not (lat or lon):
+            if position is None or sec is None or not start <= sec <= end:
                 rejected += 1
                 continue
-            if sec is None or not start <= sec <= end:
-                rejected += 1
-                continue
+            lat, lon = position
             if convert:
                 lat, lon = gcj_to_wgs(lat, lon)
             put(sec, {"position_lat": round(lat * 2**31 / 180),
